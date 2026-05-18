@@ -1,0 +1,142 @@
+---
+title: 'Initial Dataset'
+format: html
+---
+
+
+> here there is the daatset.
+
+Libraries:
+
+```{r}
+pacman::p_load(tidyverse, arrow, sfarrow, sf, here, knitr, restatis, leaflet, htmltools)
+```
+
+
+
+
+
+# 1. initial dataset
+> Here I want to load the initial dataset.
+
+Dataset:
+
+```{r}
+# Full date range
+all_dates <- seq.Date(as.Date("2019-02-01"), as.Date("2025-11-01"), by = "month")
+
+# All municipalities (Survey names take priority over Ben names for overlapping codes)
+muni_all <- tribble(
+  ~Municipality,                    ~MunicipalityCode,
+  # From Survey
+  "Bonn, Stadt",                    "05314000",
+  "Darmstadt, Wissenschaftsstadt",  "06411000",
+  "Frankfurt am Main, Stadt",       "06412000",
+  "Oldenburg (Oldenburg), Stadt",   "03403000",
+  "Jever, Stadt",                   "03455007",
+  "Fröndenberg/Ruhr, Stadt",        "05978012",
+  "Weilheim i.OB, St",             "09190157",
+  "Kamp-Lintfort, Stadt",          "05170020",
+  "Lüneburg, Hansestadt",           "03355022",
+  "Friedrichshafen, Stadt",         "08435016",
+  "Kornwestheim, Stadt",            "08118046",
+  "Erlangen",                       "09562000",
+  "Wickede (Ruhr)",                 "05974056",
+  # From Heidelberg
+  "Heidelberg, Stadt",              "08221000",
+  # From Ben (not in Survey)
+  "Stuttgart",                      "08111000",
+  "Koln",                           "05315000",
+  "Braunschweig",                   "03101000",
+  "Munchen",                        "09162000",
+  "Berlin",                         "11000000",
+  "Essen",                          "05113000",
+  "Dresden",                        "14612000",
+  "Duisburg",                       "05112000",
+  "Dortmund",                       "05913000",
+  "Bremen",                         "04011000",
+  "Bremerhaven",                    "04012000",
+  "Hamburg",                         "02000000",
+  "Reutlingen",                     "08415061",
+  "Erfurt",                         "16051000",
+  "Hannover",                       "03241001",
+  "Munster",                        "05515000"
+)
+
+# Create full balanced panel
+data.treatment <- crossing(
+  MunicipalityCode = muni_all$MunicipalityCode,
+  date = all_dates
+) |>
+  left_join(muni_all, by = "MunicipalityCode") |>
+  mutate(
+    treatment = case_when(
+      # --- Survey municipalities (priority 1) ---
+      MunicipalityCode == "05314000" & date >= as.Date("2021-09-01") ~ 1L,
+      MunicipalityCode == "06411000" & date >= as.Date("2021-07-01") ~ 1L,
+      MunicipalityCode == "06412000" & date >= as.Date("2023-11-01") & date <= as.Date("2024-03-01") ~ 1L,
+      MunicipalityCode == "03403000" & date >= as.Date("2020-01-01") & date <= as.Date("2023-03-01") ~ 1L,
+      MunicipalityCode == "03455007" & date >= as.Date("2023-01-01") & date <= as.Date("2023-12-01") ~ 1L,
+      MunicipalityCode == "05978012" & date >= as.Date("2022-03-01") & date <= as.Date("2023-12-01") ~ 1L,
+      MunicipalityCode == "09190157" & date >= as.Date("2022-04-01") & date <= as.Date("2024-12-01") ~ 1L,
+      MunicipalityCode == "05170020" & date >= as.Date("2021-11-01") & date <= as.Date("2024-03-01") ~ 1L,
+      # --- Heidelberg (priority 2) ---
+      MunicipalityCode == "08221000" & date >= as.Date("2022-09-01") & date <= as.Date("2024-03-01") ~ 1L,
+      # --- Ben-only municipalities (priority 3) ---
+      MunicipalityCode == "08111000" & date >= as.Date("2020-11-01") & date <= as.Date("2025-12-01") ~ 1L,
+      MunicipalityCode == "05315000" & date >= as.Date("2022-04-01") ~ 1L,
+      MunicipalityCode == "03101000" & date >= as.Date("2022-04-01") ~ 1L,
+      MunicipalityCode == "09162000" & date >= as.Date("2022-10-01") ~ 1L,
+      MunicipalityCode == "11000000" & date >= as.Date("2023-02-01") ~ 1L,
+      MunicipalityCode == "05113000" & date >= as.Date("2023-03-01") ~ 1L,
+      MunicipalityCode == "14612000" & date >= as.Date("2023-06-01") ~ 1L,
+      MunicipalityCode == "05112000" & date >= as.Date("2023-10-01") ~ 1L,
+      MunicipalityCode == "05913000" & date >= as.Date("2023-11-01") ~ 1L,
+      TRUE ~ 0L
+    )
+  ) |>
+  select(Municipality, MunicipalityCode, date, treatment) |>
+  arrange(Municipality, MunicipalityCode, date) |>
+  group_by(MunicipalityCode) |>
+  mutate(ever_treated = max(treatment)) |>
+  ungroup()
+
+
+```
+
+
+Here I want to create a map with all the municipalities (colored based on the treated or never-treated group):
+
+```{r}
+municipalities <- st_read_parquet(here("4. Maps/4.1. Dataset/municipalities.parquet"))
+end_panel <- max(data.treatment$date)
+
+muni_info <- data.treatment |>
+  arrange(MunicipalityCode, date) |>
+  group_by(MunicipalityCode) |>
+  mutate(spell = cumsum(treatment == 1L & lag(treatment, default = 0L) == 0L)) |>
+  filter(treatment == 1L) |>
+  group_by(Municipality, MunicipalityCode, spell) |>
+  summarise(s = paste0(format(min(date), "%b %Y"), " &rarr; ",
+                       if_else(max(date) >= end_panel, "ongoing", format(max(date), "%b %Y"))),
+            .groups = "drop_last") |>
+  summarise(spells = paste(s, collapse = "<br/>"), .groups = "drop") |>
+  right_join(distinct(data.treatment, Municipality, MunicipalityCode, ever_treated),
+             by = c("Municipality", "MunicipalityCode")) |>
+  mutate(group  = if_else(ever_treated == 1L, "Treated", "Never-treated"),
+         spells = coalesce(spells, "Never treated"))
+
+muni_map <- municipalities |>
+  select(MunicipalityCode) |>
+  inner_join(muni_info, by = "MunicipalityCode") |>
+  st_transform(4326)
+
+leaflet(muni_map) |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+  addPolygons(
+    fillColor   = ~if_else(group == "Treated", "#d7301f", "#2b8cbe"),
+    fillOpacity = 0.85, color = "black", weight = 0.7,
+    label = ~lapply(sprintf("<b>%s</b><br/>%s<br/>%s",
+                            htmlEscape(Municipality), MunicipalityCode, spells), HTML)
+  )
+```
