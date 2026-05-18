@@ -103,7 +103,7 @@ data.treatment <- crossing(
 
 
 ```
-
+d
 
 Here I want to create a map with all the municipalities (colored based on the treated or never-treated group):
 
