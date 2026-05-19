@@ -1,0 +1,52 @@
+---
+title: 'Mannhim Subsidy program'
+format: html
+---
+
+
+I now have enough information to compile a comprehensive note. Here it is, ready to copy:
+
+---
+
+## Municipal Balcony PV Subsidy Program — Mannheim
+
+### Structured Summary
+
+**Program name:** Balkon-SolarBonus (administered by the Klimaschutzagentur Mannheim on behalf of the City of Mannheim)
+
+**Start date:** March 15, 2023. The program was approved by the Gemeinderat on March 15, 2023, and applications were accepted from that date onward. (https://quadratsolar.de/foerderung-von-balkonsolar-jetzt-auch-in-mannheim/)
+
+**End date / status:** A press release from the City of Mannheim dated March 10, 2026 announced that, due to a reduced climate fund budget, the balcony solar subsidy program (*Balkonsolaranlagen*) was discontinued and would not be continued in 2026. The program therefore ran from March 2023 through the end of 2025. (https://www.mannheim.de/de/presse/neustart-der-foerderprogramme-fuer-gebaeudesanierung-heizungserneuerung-photovoltaik-und)
+
+**Note on program continuity:** The program ran under annually renewed terms (2023 edition, 2024 edition). The 2024 Förderrichtlinie for the Balkon-SolarBonus is dated March 12, 2024, indicating the program was renewed without interruption into 2024 and continued through 2025. No evidence of pauses or interruptions between 2023 and 2025 was found. (https://api.klima-ma.de/api/subsidy-downloads/20240312-bs-forderrichtlinie-2024.pdf)
+
+**Scope:** Exclusively for balcony/plug-in solar systems (Steckersolargeräte / Balkonkraftwerke). The Balkon-SolarBonus and the separate SolarBonus (for rooftop PV installations) are not combinable, confirming they are two distinct programs. Off-grid systems (*Inselanlagen*) and balcony solar systems combined with a battery storage unit are not eligible. (https://www.co2online.de/foerdermittel/details/1354329/ ; https://biber-solarkonzept.de/foerderungen/mannheim/)
+
+**Subsidy amount (2023 edition):** New installations of plug-in solar systems were subsidized with a flat grant of up to €500. (https://quadratsolar.de/foerderung-von-balkonsolar-jetzt-auch-in-mannheim/)
+
+**Subsidy amount (2024 edition — percentage-based, tiered by applicant type):**
+
+- Homeowners (*Eigentümer:innen von Wohngebäuden*): 20% of investment costs, up to €150
+- Renters and condominium owners (*Mieter:innen und Wohnungseigentümer:innen*): 50% of investment costs, up to €350
+- Low-income households (recipients of Bürgergeld, Grundsicherung, or Wohngeld): 80% of investment costs, up to €500
+
+(https://www.co2online.de/foerdermittel/details/1354329/)
+
+---
+
+### Narrative Context
+
+Mannheim's Balkon-SolarBonus was adopted as part of the city's *Klimaschutzaktionsplan* (KSAP) and is administered by the Klimaschutzagentur Mannheim, a non-profit agency jointly funded by the city and its energy utility MVV. The program was explicitly designed to incentivize new installations of plug-in solar systems across the city, contributing to the energy transition and reducing CO₂ emissions. (https://quadratsolar.de/foerderung-von-balkonsolar-jetzt-auch-in-mannheim/)
+
+The program is separate from — and not combinable with — Mannheim's longer-standing *SolarBonus*, which targets rooftop PV installations on residential buildings and has been in operation since 2018. The SolarBonus for rooftop PV was launched in 2018 for selected districts and expanded city-wide in February 2020. (https://www.mvv.de/journalisten/pressemitteilungen/detail/solarbonus-zur-foerderung-von-solaranlagen-in-mannheim-geht-in-die-zweite-runde/)
+
+Between the 2023 and 2024 editions, the grant structure changed significantly — from a flat €500 grant to a tiered percentage-based model — likely to expand access to lower-income households while reducing the unit cost to the municipal budget. In 2026, the city announced that, as a consequence of a reduced climate fund (€1 million total across all programs), the balcony solar subsidy would be discontinued, along with the refrigerator replacement program, while other programs (building renovation, heat pump, rooftop PV) would continue with modifications. (https://www.mannheim.de/de/presse/neustart-der-foerderprogramme-fuer-gebaeudesanierung-heizungserneuerung-photovoltaik-und)
+
+---
+
+### ⚠️ Caveats for coding treatment status
+
+- **Treatment period for DiD:** March 2023 – December 2025 (treat = 1); discontinued from early 2026 (outside sample period if sample ends November 2025).
+- The 2023 flat-rate grant and 2024 tiered grant are the same program, continuously active. No gap or pause has been identified in available sources.
+- The Balkon-SolarBonus is **exclusively** for balcony PV — no overlap with rooftop PV (SolarBonus), which is a separate program.
+- The 2023 program had a budget cap of approximately €120,000 (enough for ~240 systems at €500 each) (https://quadratsolar.de/foerderung-von-balkonsolar-jetzt-auch-in-mannheim/). No source confirmed budget exhaustion before the end of 2023; the program appears to have continued into 2024 with a new budget round.
