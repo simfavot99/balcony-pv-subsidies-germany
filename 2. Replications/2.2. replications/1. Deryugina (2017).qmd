@@ -1,0 +1,301 @@
+---
+title: 'Replicate Deryugina (2017)'
+format: html
+---
+
+
+
+> Here I want to replicate Deryugina (2017).
+
+Libraries:
+
+```{r}
+pacman::p_load(
+  here, haven, polars,           # paths & Stata I/O
+  tidyverse,              # dplyr, ggplot2, tidyr, purrr, readr
+  fixest,                 # TWFE / event-study regressions with FE
+  modelsummary,           # regression tables
+  broom,                  # tidy model output
+  DIDmultiplegt,          # de Chaisemartin & D'Haultfœuille static
+  DIDmultiplegtDYN        # de Chaisemartin & D'Haultfœuille dynamic
+)
+
+```
+
+Libraries (necessary):
+
+```{r}
+library(haven)
+library(dplyr)
+library(DIDmultiplegtDYN)
+library(polars)
+
+```
+
+# 1. load the dataset and prepare data
+> Here I want to load the dataset and prepare it for running regressions (with covariates too).
+
+Dataset:
+
+```{r}
+data <- read_dta(here("2. Replications", "02_01 Datasets", "Deryugina (2017)", "deryugina_2017.dta"))
+data |> print() |> glimpse()
+```
+
+
+How many obs:
+
+```{r}
+n_distinct(data$county_fips)
+```
+
+
+Plot outcome variable:
+
+```{r}
+data |>
+  ggplot(aes(x = year, y = log_curr_trans_ind_gov_pc, group = county_fips)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = "Year",
+    y = "Mean log per-capita gov. transfers to individuals"
+  ) +
+  theme_minimal()
+```
+
+Treatment over time:
+
+```{r}
+data |>
+  group_by(county_fips) |>
+  mutate(first_hurr = suppressWarnings(min(year[hurricane == 1], na.rm = TRUE))) |>
+  ungroup() |>
+  mutate(
+    first_hurr = ifelse(is.infinite(first_hurr), NA, first_hurr),
+    county_order = rank(first_hurr, ties.method = "first", na.last = "keep")
+  ) |>
+  ggplot(aes(x = year, y = reorder(factor(county_fips), county_order), fill = factor(hurricane))) +
+  geom_tile() +
+  scale_fill_manual(values = c("0" = "grey90", "1" = "firebrick"), name = "Hurricane") +
+  labs(x = "Year", y = "County (sorted by first hurricane year)") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+# simple plot
+ggplot(data, aes(year, factor(county_fips), fill = factor(hurricane))) +
+  geom_tile()
+```
+
+I want to test if the design STAY holds or not (I want to create a function for this; and also for STAY-C):
+
+> **Design STAY** — $\exists\ (g, g')$ such that:
+> **(i)** $D_{g,1} = D_{g',1}$ (same baseline treatment),
+> **(ii)** $F_g \neq F_{g'}$ (different first-switch periods, where $F_g = \infty$ if $g$ never switches).
+
+```{r}
+check_stay <- function(df, group, time, treat) {
+
+  df <- df |> arrange(.data[[group]], .data[[time]])
+
+  units <- df |>
+    group_by(.data[[group]]) |>
+    summarise(
+      D1 = first(.data[[treat]]),
+      F  = {
+        sw <- which(.data[[treat]] != dplyr::lag(.data[[treat]]))
+        if (length(sw) == 0) Inf else .data[[time]][min(sw)]
+      },
+      .groups = "drop"
+    )
+
+  # (i) at least two groups share the same baseline treatment D_{g,1}
+  cond_i  <- any(table(units$D1) >= 2)
+
+  # (ii) at least two groups have different first-switch periods F_g
+  cond_ii <- dplyr::n_distinct(units$F) >= 2
+
+  # STAY design holds iff (i) AND (ii) hold simultaneously for some pair
+  pair_exists <- units |>
+    dplyr::group_by(D1) |>
+    dplyr::summarise(n_F = dplyr::n_distinct(F), .groups = "drop") |>
+    dplyr::filter(n_F >= 2) |>
+    nrow() > 0
+
+  list(
+    `(i) same baseline D_{g,1}`        = cond_i,
+    `(ii) different first-switch F_g`  = cond_ii,
+    `STAY design holds`                = pair_exists
+  )
+}
+
+check_stay(data, group = "county_fips", time = "year", treat = "hurricane")
+```
+
+Here show me the code without fucntion:
+
+
+```{r}
+units <- data |>
+  arrange(county_fips, year) |>
+  group_by(county_fips) |>
+  summarise(
+    D1 = first(hurricane),
+    F  = {
+      sw <- which(hurricane != lag(hurricane))
+      if (length(sw) == 0) Inf else year[min(sw)]
+    },
+    .groups = "drop"
+  )
+
+units
+table(units$D1, units$F) 
+units |>
+  ggplot(aes(x = F, group = D1, color = D1))+
+  geom_bar()
+
+units |>
+  group_by(D1, F) |>
+  summarise(n = n()) |>
+  ggplot(aes(x = F, y = n, group = factor(D1), fill = factor(D1)))+
+  geom_col()
+```
+
+
+# 2. DID estimators
+> Here I want to show the DID estimators.
+
+Dataset:
+
+```{r}
+data
+```
+
+## 2.1. TWFE model
+> Here I want to run a TWFE model and show the estimates.
+
+Static TWFE:
+
+Run three specifications so we can compare them side by side:
+
+```{r}
+m1 <- feols(log_curr_trans_ind_gov_pc ~ hurricane | county_fips + year,
+            data = data, cluster = ~county_fips)
+
+m2 <- feols(log_curr_trans_ind_gov_pc ~ hurricane + log_pop1969 |
+              county_fips + year,
+            data = data, cluster = ~county_fips)
+```
+
+
+Table:
+
+```{r}
+etable(m1, m2,
+       headers = c("Baseline", "+ pop control"),
+       signif.code = c("***" = 0.01, "**" = 0.05, "*" = 0.1))
+       
+modelsummary(
+  list(
+    "TWFE"            = m1,
+    "+ pop control"   = m2 ),
+  stars   = TRUE,
+  gof_map = c("nobs", "r.squared", "FE: county_fips", "FE: year"),
+  output  = "markdown"
+)
+
+
+```
+
+
+Event study (leads -5 to -2, current, lags 1 to 10; lead -1 omitted as reference):
+
+```{r}
+data_es <- data |>
+  group_by(county_fips) |>
+  mutate(
+    first_hurr_year = suppressWarnings(min(year[hurricane == 1], na.rm = TRUE)),
+    first_hurr_year = ifelse(is.infinite(first_hurr_year), NA, first_hurr_year),
+    time_to_hurr   = year - first_hurr_year,
+    time_to_hurr   = ifelse(is.na(time_to_hurr), -1000, time_to_hurr),  # never-treated bucket
+    time_to_hurr   = pmin(pmax(time_to_hurr, -5), 10)                    # bin endpoints
+  ) |>
+  ungroup()
+
+data_es |> print() |> glimpse()
+
+es <- feols(
+  log_curr_trans_ind_gov_pc ~ i(time_to_hurr, ref = c(-1, -1000)) |
+    county_fips + year,
+  data    = data_es,
+  cluster = ~county_fips
+)
+
+iplot(es,
+      xlab     = "Years since first hurricane",
+      main     = "Event study: effect of hurricane on log gov. transfers pc",
+      ref.line = 0)
+```
+
+
+## 2.2. static model
+> Here I want to apply the de Chaisemartin & D'Haultfœuille static estimator (`did_multiplegt_stat`), which is valid for non-absorbing treatment under the STAY-C design.
+
+```{r}
+stat <- did_multiplegt_stat(
+  df        = as.data.frame(data),
+  outcome   = "log_curr_trans_ind_gov_pc",
+  group     = "county_fips",
+  time      = "year",
+  treatment = "hurricane",
+  cluster   = "county_fips",
+  bootstrap = TRUE,
+  brep      = 100
+)
+
+stat
+```
+
+
+## 2.3. dynamic model
+> Here I want to estimate the model assuming dynamic effect of the treatment.
+
+Model1:
+
+```{r}
+res_t2 <- did_multiplegt_dyn(
+  df        = data,
+  outcome   = "log_curr_trans_ind_gov_pc",
+  group     = "county_fips",
+  time      = "year",
+  treatment = "hurricane",
+  effects   = 11,
+  placebo   = 11,
+  cluster   = "county_fips"
+)
+print(res_t2)
+res_t2$plot
+```
+
+
+## 2.4. Test dynamic effect of the treatment
+> here I want to test the dynamic effect of the treatment.
+
+Test:
+
+```{r}
+test1 <- did_multiplegt_dyn(
+  df        = data,
+  outcome   = "log_curr_trans_ind_gov_pc",
+  group     = "county_fips",
+  time      = "year",
+  treatment = "hurricane",
+  effects   = 11,
+  placebo   = 11,
+  cluster   = "county_fips",
+  effects_equal = TRUE,
+  same_switchers = TRUE
+)
+
+
+```
