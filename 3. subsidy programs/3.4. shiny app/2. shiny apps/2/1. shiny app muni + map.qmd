@@ -1,0 +1,634 @@
+---
+title: 'Shiny app at daily frequency'
+format: html
+---
+
+> Here I want to create the dataset for Germany.
+
+
+**Claude chat**:
+- SHINY APP (2)
+
+
+**Shiny app**:
+I want to create a shiny app where I can see:
+- on the left there is a map of all the municipalities included in the research study (you can use a color to distinguish beteen either treated/never-treated or based on the time when the municipalty gets the teratment, with a lighter color for those municiaplities that started the program at the beginning of the sample and darker and darker for all the others).
+I want to see also the federal state bounderies (in order to understand in whihc federal state the municipality is located)
+Use leaflet fucntion to create the map.
+- if i click on a specific municipality, I want to see:
+    1. the municipality name
+    2. the code
+    3. the dates when it staretd the program (and if it stopped and if eventually it started again)
+
+- if i clik on a municipality, on the right of the shiny app, I want to see on the top the relevant dates for the program (when it started, if it eneded, if it staretd again) and down I want to see a plot where i can see a MA of the daily registration + daily registration in the background in grey + verticla lines for the dates of the program
+
+- i want you to create the series in the plot using ggiraph package, so i can interact with it.
+
+
+
+
+**Libraries (necessary)**:
+
+```{r}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  here,        # here()
+  arrow,       # open_dataset(), read_parquet(), write_parquet(), collect()
+  sfarrow,     # st_read_parquet()
+  sf,          # st_drop_geometry()
+  dplyr,       # rename, mutate, case_when, if_else, left_join, relocate,
+               # filter, select, group_by, summarise, arrange, pull, ungroup, n
+  tibble,      # tibble()
+  tidyr,       # complete()
+  lubridate,   # floor_date()
+  stringr,     # str_pad()
+  restatis     # gen_logincheck(), gen_table()
+)
+```
+
+
+
+# 1. datasets
+> Here there is a list of the datasets you can use to create the shiny app.
+
+
+## 1.1. treatment dataset
+> Here you can see the municipalities in the sample I want to use, with the treatment path for each of them.
+
+**Importnat**: when you decide to add new municipalities, please update the dataset in chapter 1.2.
+
+Dataset:
+
+```{r}
+# Full date range
+all_dates <- seq.Date(as.Date("2019-02-01"), as.Date("2025-11-01"), by = "month")
+
+# All municipalities (Survey names take priority over Ben names for overlapping codes)
+muni_all <- tribble(
+  ~Municipality,                    ~MunicipalityCode,
+  # From Survey
+  "Bonn, Stadt",                    "05314000",
+  "Darmstadt, Wissenschaftsstadt",  "06411000",
+  "Frankfurt am Main, Stadt",       "06412000",
+  "Oldenburg (Oldenburg), Stadt",   "03403000",
+  "Jever, Stadt",                   "03455007",
+  "Fröndenberg/Ruhr, Stadt",        "05978012",
+  "Weilheim i.OB, St",             "09190157",
+  "Kamp-Lintfort, Stadt",          "05170020",
+  "Lüneburg, Hansestadt",           "03355022",
+  "Friedrichshafen, Stadt",         "08435016",
+  "Kornwestheim, Stadt",            "08118046",
+  "Erlangen",                       "09562000",
+  "Wickede (Ruhr)",                 "05974056",
+  # From Heidelberg
+  "Heidelberg, Stadt",              "08221000",
+  # From Ben (not in Survey)
+  "Stuttgart",                      "08111000",
+  "Koln",                           "05315000",
+  "Braunschweig",                   "03101000",
+  "Munchen",                        "09162000",
+  "Berlin",                         "11000000",
+  "Essen",                          "05113000",
+  "Dresden",                        "14612000",
+  "Duisburg",                       "05112000",
+  "Dortmund",                       "05913000",
+  "Bremen",                         "04011000",
+  "Bremerhaven",                    "04012000",
+  "Hamburg",                         "02000000",
+  "Reutlingen",                     "08415061",
+  "Erfurt",                         "16051000",
+  "Hannover",                       "03241001",
+  "Munster",                        "05515000"
+)
+
+# Create full balanced panel
+data.treatment <- crossing(
+  MunicipalityCode = muni_all$MunicipalityCode,
+  date = all_dates
+) |>
+  left_join(muni_all, by = "MunicipalityCode") |>
+  mutate(
+    treatment = case_when(
+      # --- Survey municipalities (priority 1) ---
+      MunicipalityCode == "05314000" & date >= as.Date("2021-09-01") ~ 1L,
+      MunicipalityCode == "06411000" & date >= as.Date("2021-07-01") ~ 1L,
+      MunicipalityCode == "06412000" & date >= as.Date("2023-11-01") & date <= as.Date("2024-03-01") ~ 1L,
+      MunicipalityCode == "03403000" & date >= as.Date("2020-01-01") & date <= as.Date("2023-03-01") ~ 1L,
+      MunicipalityCode == "03455007" & date >= as.Date("2023-01-01") & date <= as.Date("2023-12-01") ~ 1L,
+      MunicipalityCode == "05978012" & date >= as.Date("2022-03-01") & date <= as.Date("2023-12-01") ~ 1L,
+      MunicipalityCode == "09190157" & date >= as.Date("2022-04-01") & date <= as.Date("2024-12-01") ~ 1L,
+      MunicipalityCode == "05170020" & date >= as.Date("2021-11-01") & date <= as.Date("2024-03-01") ~ 1L,
+      # --- Heidelberg (priority 2) ---
+      MunicipalityCode == "08221000" & date >= as.Date("2022-09-01") & date <= as.Date("2024-03-01") ~ 1L,
+      # --- Ben-only municipalities (priority 3) ---
+      MunicipalityCode == "08111000" & date >= as.Date("2020-11-01") & date <= as.Date("2025-12-01") ~ 1L,
+      MunicipalityCode == "05315000" & date >= as.Date("2022-04-01") ~ 1L,
+      MunicipalityCode == "03101000" & date >= as.Date("2022-04-01") ~ 1L,
+      MunicipalityCode == "09162000" & date >= as.Date("2022-10-01") ~ 1L,
+      MunicipalityCode == "11000000" & date >= as.Date("2023-02-01") ~ 1L,
+      MunicipalityCode == "05113000" & date >= as.Date("2023-03-01") ~ 1L,
+      MunicipalityCode == "14612000" & date >= as.Date("2023-06-01") ~ 1L,
+      MunicipalityCode == "05112000" & date >= as.Date("2023-10-01") ~ 1L,
+      MunicipalityCode == "05913000" & date >= as.Date("2023-11-01") ~ 1L,
+      TRUE ~ 0L
+    )
+  ) |>
+  select(Municipality, MunicipalityCode, date, treatment) |>
+  arrange(Municipality, MunicipalityCode, date) |>
+  group_by(MunicipalityCode) |>
+  mutate(ever_treated = max(treatment)) |>
+  ungroup()
+
+
+```
+
+
+Save and load the treatment dataset:
+
+```{r}
+write_parquet(
+  data.treatment,
+  here("3. subsidy programs/3.4. shiny app/2. shiny apps/2/data.treatment.parquet")
+)
+
+data.treatment <- read_parquet(
+  here("3. subsidy programs/3.4. shiny app/2. shiny apps/2/data.treatment.parquet")
+)
+```
+
+
+## 1.2. Dataset of daily registrations
+> here there is the dataset to see the daily registration of balcony PVs over time.
+
+**Important**: sometimes I will update the treatment dataset and I will add some new municipalities. So, update this dataset accordingly.
+
+Create the datasets:
+```{r}
+data <- open_dataset(here("3. subsidy programs/3.1. data/EinheitenSolar.parquet"))
+
+
+# Step 1: rename German → English (explicit mapping, column order differs from old dataset)
+data <- data |>
+  rename(
+    UnitMastrNumber                          = EinheitMastrNummer,
+    DateLastUpdate                           = DatumLetzteAktualisierung,
+    LocationMastrNumber                      = LokationMaStRNummer,
+    GridOperatorVerificationStatus           = NetzbetreiberpruefungStatus,
+    GridOperatorVerificationDate             = NetzbetreiberpruefungDatum,
+    PlantOperatorMastrNumber                 = AnlagenbetreiberMastrNummer,
+    Country                                  = Land,
+    FederalState                             = Bundesland,
+    District                                 = Landkreis,
+    Municipality                             = Gemeinde,
+    MunicipalityCode                         = Gemeindeschluessel,
+    PostalCode                               = Postleitzahl,
+    City                                     = Ort,
+    RegistrationDate                         = Registrierungsdatum,
+    CommissioningDate                        = Inbetriebnahmedatum,
+    UnitSystemStatus                         = EinheitSystemstatus,
+    UnitOperationalStatus                    = EinheitBetriebsstatus,
+    NotPresentInMigratedUnits                = NichtVorhandenInMigriertenEinheiten,
+    PowerGenerationUnitName                  = NameStromerzeugungseinheit,
+    Weic_NotAvailable                        = Weic_nv,
+    PowerPlantNumber_NotAvailable            = Kraftwerksnummer_nv,
+    EnergySource                             = Energietraeger,
+    GrossCapacity                            = Bruttoleistung,
+    NetNominalCapacity                       = Nettonennleistung,
+    RemoteControllabilityGridOperator        = FernsteuerbarkeitNb,
+    FeedInType                               = Einspeisungsart,
+    AssignedActivePowerInverter              = ZugeordneteWirkleistungWechselrichter,
+    NumberOfModules                          = AnzahlModule,
+    TypeOfSolarSystem                        = ArtDerSolaranlage,
+    PowerLimitation                          = Leistungsbegrenzung,
+    UniformOrientationAndTiltAngle           = EinheitlicheAusrichtungUndNeigungswinkel,
+    MainOrientation                          = Hauptausrichtung,
+    MainOrientationTiltAngle                 = HauptausrichtungNeigungswinkel,
+    UsageArea                                = Nutzungsbereich,
+    EegMastrNumber                           = EegMaStRNummer,
+    StorageAtSameLocation                    = SpeicherAmGleichenOrt,
+    SecondaryOrientation                     = Nebenausrichtung,
+    SecondaryOrientationTiltAngle            = NebenausrichtungNeigungswinkel,
+    Street                                   = Strasse,
+    StreetNotFound                           = StrasseNichtGefunden,
+    HouseNumber_NotAvailable                 = Hausnummer_nv,
+    HouseNumberNotFound                      = HausnummerNichtGefunden,
+    Longitude                                = Laengengrad,
+    Latitude                                 = Breitengrad,
+    DateStartTemporaryDecommissioning        = DatumBeginnVoruebergehendeStilllegung,
+    HouseNumber                              = Hausnummer,
+    AddressAddition                          = Adresszusatz,
+    RemoteControllabilityDirectMarketer      = FernsteuerbarkeitDv,
+    PreviousPlantOperatorMastrNumber         = AltAnlagenbetreiberMastrNummer,  # new variable
+    DateOfOperatorChange                     = DatumDesBetreiberwechsels,
+    DateRegistrationOfOperatorChange         = DatumRegistrierungDesBetreiberwechsels,
+    CadastralDistrict                        = Gemarkung,
+    FieldParcelNumbers                       = FlurFlurstuecknummern,
+    ConnectionToExtraHighOrHighVoltage       = AnschlussAnHoechstOderHochSpannung,
+    DatePermanentDecommissioning             = DatumEndgueltigeStilllegung,
+    SizeOfUsedAreaInHectares                 = GroesseDerInAnspruchGenommenenFlaecheInHektar,
+    PreviousUsageTypeOfArea                  = VorherigerNutzungsartenbereichDerFlaeche,
+    PredominantUsageTypeBeforeSolarConstruction = UeberwiegendeNutzungsartDerFlaecheVorErrichtung,
+    NameOfSolarPark                          = NameDesSolarparks,
+    AdditionalFeaturesOfAreaAndCurrentUsage  = ZusaetzlicheMerkmaleDerFlaecheUndDerAktuellenFlaechennutzung,
+    GenMastrNumber                           = GenMastrNummer,
+    CommissioningDateAtCurrentLocation       = InbetriebnahmedatumAmAktuellenStandort,
+    DispatchResponsible                      = Einsatzverantwortlicher,
+    CitizenEnergy                            = Buergerenergie,
+    DateResumptionOfOperation                = DatumWiederaufnahmeBetrieb,
+    PlannedCommissioningDate                 = GeplantesInbetriebnahmedatum,
+    ClearanceHeight                          = LichteHoehe,
+    PowerPlantNumber                         = Kraftwerksnummer
+  )
+
+# Step 2: convert numeric columns (XML parsing stores everything as character)
+data <- data |>
+  mutate(
+    TypeOfSolarSystem           = as.integer(TypeOfSolarSystem),
+    Country                     = as.integer(Country),
+    FederalState                = as.integer(FederalState),
+    GrossCapacity               = as.numeric(GrossCapacity),
+    NetNominalCapacity          = as.numeric(NetNominalCapacity),
+    AssignedActivePowerInverter = as.numeric(AssignedActivePowerInverter),
+    NumberOfModules             = as.integer(NumberOfModules)
+  )
+
+# Step 3: lookup tables
+C1 <- data.frame(
+  TypeOfSolarSystem.names = c(
+    "Structural_facilities", "Other_Structural_facilities", "Open_space",
+    "Bodies_water", "Large_parking_lot", "Plug_in_sola_system", "Onshore&Offshore_wind_power"
+  ),
+  TypeOfSolarSystem = as.integer(c(853, 2484, 852, 3002, 3058, 2961, NA))
+)
+
+C2 <- tibble(
+  Country = as.integer(c(84, 231, 90, 66, 198, 206, 106)),
+  Country.sn = c("Germany", "Switzerland", "Denmark", "Belgium", "Netherlands", "Austria", "France")
+)
+
+C3 <- data.frame(
+  FederalState = as.integer(c(
+    1409, 1402, 1400, 1403, 1412, 1408, 1410, 1407,
+    1414, 1411, 1413, 1405, 1415, 1406, 1401, 1404
+  )),
+  FederalState.names = c(
+    "North Rhine-Westphalia", "Baden-Württemberg", "Brandenburg", "Bavaria",
+    "Saarland", "Lower Saxony", "Rhineland-Palatinate", "Mecklenburg-Western Pomerania",
+    "Saxony-Anhalt", "Schleswig-Holstein", "Saxony", "Hesse",
+    "Thuringia", "Hamburg", "Berlin", "Bremen"
+  ),
+  FederalStateCode = c(
+    "DEA", "DE1", "DE4", "DE2",
+    "DEC", "DE9", "DEB", "DEM",
+    "DEE", "DEF", "DED", "DE7",
+    "DEG", "DE6", "DE3", "DE5"
+  )
+)
+
+# district code from map (no geometry needed)
+districts_map <- st_read_parquet(here("ignore/2. maps/districts.parquet")) |>
+  st_drop_geometry() |>
+  select(District, DistrictCode)
+
+# Step 4: join lookups
+data <- data |>
+  left_join(C1, by = "TypeOfSolarSystem") |>
+  relocate(TypeOfSolarSystem.names, .after = TypeOfSolarSystem) |>
+  left_join(C2, by = "Country") |>
+  relocate(Country.sn, .after = Country) |>
+  left_join(C3, by = "FederalState") |>
+  relocate(FederalState.names, .after = FederalState) |>
+  relocate(FederalStateCode, .after = FederalState.names) |>
+  left_join(districts_map, by = "District") |>
+  relocate(DistrictCode, .after = District)
+
+# Step 5: solar_category
+reform_date <- as.Date("2024-05-16")
+
+data <- data |>
+  mutate(
+    RegistrationDate  = as.Date(RegistrationDate),
+    CommissioningDate = as.Date(CommissioningDate),
+    solar_category = case_when(
+      TypeOfSolarSystem == 2961 & RegistrationDate <  reform_date & AssignedActivePowerInverter <= 0.6 ~ "Plug_in_sola_system - Balcony",
+      TypeOfSolarSystem == 2961 & RegistrationDate >= reform_date & AssignedActivePowerInverter <= 0.8 & GrossCapacity <= 2.0 ~ "Plug_in_sola_system - Balcony",
+      TypeOfSolarSystem == 2961 ~ "Plug_in_sola_system - Non-Balcony",
+      TRUE ~ TypeOfSolarSystem.names
+    )
+  )
+# Step 6: filter Germany
+data <- data |>
+  filter(Country.sn == "Germany")
+
+# Step 7: date variables (week, month, quarter, year)
+data <- data |>
+  mutate(
+    date.registration.day     = RegistrationDate,
+    date.registration.week    = floor_date(RegistrationDate,  "week"),
+    date.registration.month   = floor_date(RegistrationDate,  "month"),
+    date.registration.quarter = floor_date(RegistrationDate,  "quarter"),
+    date.registration.year    = floor_date(RegistrationDate,  "year"),
+    date.commission.day       = CommissioningDate,
+    date.commission.week      = floor_date(CommissioningDate, "week"),
+    date.commission.month     = floor_date(CommissioningDate, "month"),
+    date.commission.quarter   = floor_date(CommissioningDate, "quarter"),
+    date.commission.year      = floor_date(CommissioningDate, "year")
+  )
+
+# Step 8: fix MunicipalityCode
+data <- data |>
+  mutate(MunicipalityCode = str_pad(as.character(MunicipalityCode), 8, pad = "0"))
+```
+
+Collapse every category other than `Balcony PVs` into a single `Non-balcony PVs` group:
+
+```{r}
+data <- data |>
+  mutate(solar_category = if_else(solar_category == "Plug_in_sola_system - Balcony",
+                                  "Balcony PVs",
+                                  "Non-balcony PVs"))
+```
+
+
+Here I want to filter for the balcony PVs:
+
+```{r}
+data <- data |>
+  filter(solar_category == "Balcony PVs")
+```
+
+I want to filter based on the municipalities I chose for the treatment dataset:
+
+```{r}
+data <- data |>
+  filter(MunicipalityCode %in% muni_all$MunicipalityCode)
+```
+
+
+Create the dataset daily frequency for all municipalities:
+
+```{r}
+data_day <- data |>
+  group_by(MunicipalityCode, Municipality, date.registration.day) |>
+  summarise(n = n(), .groups = "drop") |>
+  collect() |>
+  group_by(MunicipalityCode, Municipality) |>
+  complete(date.registration.day = seq(min(date.registration.day), max(date.registration.day), by = "day"), fill = list(n = 0)) |>
+  arrange(MunicipalityCode, date.registration.day) |>
+  mutate(n_cumulative = cumsum(n)) |>
+  ungroup()
+```
+
+***Population***:
+
+```{r}
+#Credentials:
+# gen_auth_save(database = 'genesis')
+# gen_auth_save(database = 'regio')
+
+gen_logincheck(database = "genesis")
+gen_logincheck(database = "regio")
+
+
+# Load the data:
+pop.muni.2023 <- gen_table(
+  name      = "12411-01-01-5",
+  database  = "regio",
+  language  = "en",
+  startyear = 2023,
+  endyear   = 2023
+) |>
+  filter(`1_variable_code` == "GEMEIN",          # municipalities only (drops DINSG/DLAND/REGBEZ/KREISE)
+         is.na(`2_variable_attribute_code`)) |>  # sex total
+  select(
+    MunicipalityCode = `1_variable_attribute_code`,
+    Municipality     = `1_variable_attribute_label`,
+    year             = time,
+    population       = value
+  ) |>
+  mutate(
+    date       = as.Date(paste0(substr(year, 1, 4), "-12-31")),
+    population = suppressWarnings(as.numeric(population))
+  ) |>
+  select(Municipality, MunicipalityCode, date, population) 
+```
+
+
+**Save**:
+```{r}
+
+write_parquet(
+  pop.muni.2023,
+  here("3. subsidy programs/3.4. shiny app/1. data/pop.muni.2023.parquet")
+)
+```
+
+***Adjust for the population data***:
+
+```{r}
+# population data only for the relevant municipalities
+# (distinct() drops duplicate rows produced by hidden GENESIS dimensions)
+pop.muni.2023 <- pop.muni.2023 |>
+  filter(MunicipalityCode %in% muni_all$MunicipalityCode) |>
+  distinct()
+
+data_day <- data_day |>
+  left_join(pop.muni.2023 |> select(MunicipalityCode, population),
+            by = "MunicipalityCode") |>
+  mutate(
+    n_per100k            = (n            / population) * 100000,
+    n_cumulative_per100k = (n_cumulative / population) * 100000
+  )
+```
+
+***load the dataset***:
+
+```{r}
+write_parquet(
+  data_day,
+  here("3. subsidy programs/3.4. shiny app/2. shiny apps/2/outcome_variable.parquet")
+)
+
+data_day <- read_parquet(
+  here("3. subsidy programs/3.4. shiny app/2. shiny apps/2/outcome_variable.parquet")
+)
+```
+
+
+
+
+
+## 1.3. dataset for bounderies
+> Here I want to load the datasets for the bounderis, i.e., for municipalities and federal states.
+
+**Dataset for municipalities**:
+
+```{r}
+municipalities <- st_read_parquet(here("ignore", "2. maps", "municipalities.parquet"))
+glimpse(municipalities)
+```
+
+
+
+**Dataset for federal states**:
+
+```{r}
+federal_states <- st_read_parquet(here("ignore", "2. maps", "federalState.parquet"))
+glimpse(federal_states)
+```
+
+
+
+# 2. shiny app
+> Here I want you to create the shiny app I mentioned at the beginning. Please do everything in one chunk, where you have both the usre interface and the server in the same chunk (so that once I run, it elaborate everything).
+
+Shiny app:
+```{r}
+# extra libraries used only by the app
+pacman::p_load(shiny, leaflet, ggplot2, ggiraph, slider, htmltools, purrr)
+
+# --- 1. pre-compute treatment episodes (runs of treatment == 1) per muni -----
+treatment_episodes <- data.treatment |>
+  arrange(MunicipalityCode, date) |>
+  group_by(MunicipalityCode) |>
+  mutate(
+    new_episode = treatment == 1L & lag(treatment, default = 0L) == 0L,
+    episode_id  = cumsum(new_episode)
+  ) |>
+  filter(treatment == 1L) |>
+  group_by(MunicipalityCode, Municipality, episode_id) |>
+  summarise(start = min(date), end = max(date), .groups = "drop") |>
+  arrange(MunicipalityCode, start) |>
+  select(MunicipalityCode, Municipality, start, end)
+
+# first start date per muni (NA = never treated) — used for map colouring
+muni_start <- data.treatment |>
+  filter(treatment == 1L) |>
+  group_by(MunicipalityCode) |>
+  summarise(first_start = min(date), .groups = "drop")
+
+# --- 2. build the sf for the map ---------------------------------------------
+muni_sf <- municipalities |>
+  filter(MunicipalityCode %in% muni_all$MunicipalityCode) |>
+  left_join(muni_start, by = "MunicipalityCode")
+
+pal <- colorNumeric(
+  palette  = "viridis",
+  domain   = as.numeric(muni_sf$first_start),
+  na.color = "#bbbbbb",
+  reverse  = TRUE   # earlier starts -> lighter, later starts -> darker
+)
+
+# --- 3. UI -------------------------------------------------------------------
+ui <- fluidPage(
+  titlePanel("Balcony-PV subsidy programs — daily registrations by municipality"),
+  fluidRow(
+    column(6, leafletOutput("map", height = 720)),
+    column(6,
+      uiOutput("muni_info"),
+      sliderInput("ma_window", "Moving-average window (days):",
+                  min = 7, max = 90, value = 30, step = 1),
+      girafeOutput("plot", height = "480px")
+    )
+  )
+)
+
+# --- 4. server ---------------------------------------------------------------
+server <- function(input, output, session) {
+
+  output$map <- renderLeaflet({
+    leaflet() |>
+      addProviderTiles(providers$CartoDB.Positron) |>
+      addPolygons(
+        data    = federal_states,
+        fill    = FALSE,
+        color   = "black",
+        weight  = 2,
+        opacity = 0.7
+      ) |>
+      addPolygons(
+        data        = muni_sf,
+        layerId     = ~MunicipalityCode,
+        fillColor   = ~pal(as.numeric(first_start)),
+        fillOpacity = 0.85,
+        color       = "white",
+        weight      = 1,
+        label       = ~paste0(Municipality, " (", MunicipalityCode, ")"),
+        highlightOptions = highlightOptions(weight = 3, color = "red", bringToFront = TRUE)
+      ) |>
+      addLegend(
+        position  = "bottomright",
+        pal       = pal,
+        values    = as.numeric(muni_sf$first_start),
+        title     = "Treatment start",
+        labFormat = labelFormat(transform = function(x)
+          format(as.Date(x, origin = "1970-01-01"), "%Y-%m")),
+        na.label  = "Never treated"
+      )
+  })
+
+  selected_code <- reactive({ input$map_shape_click$id })
+
+  output$muni_info <- renderUI({
+    code <- selected_code()
+    if (is.null(code)) return(tags$p(em("Click a municipality on the map.")))
+    info <- muni_all |> filter(MunicipalityCode == code)
+    ep   <- treatment_episodes |> filter(MunicipalityCode == code)
+    tagList(
+      tags$h4(info$Municipality),
+      tags$p(tags$strong("Code: "), code),
+      tags$strong("Program episodes:"),
+      if (nrow(ep) == 0) tags$p(em("Never treated")) else
+        tags$ul(
+          purrr::pmap(list(ep$start, ep$end), function(s, e)
+            tags$li(format(s, "%Y-%m-%d"), " → ", format(e, "%Y-%m-%d"))
+          )
+        )
+    )
+  })
+
+  output$plot <- renderGirafe({
+    code <- selected_code()
+    if (is.null(code)) return(NULL)
+    d <- data_day |>
+      filter(MunicipalityCode == code) |>
+      arrange(date.registration.day)
+    if (nrow(d) == 0) return(NULL)
+    d <- d |> mutate(
+      ma = slider::slide_dbl(n, mean,
+                             .before = input$ma_window - 1L,
+                             .complete = FALSE)
+    )
+    ep <- treatment_episodes |> filter(MunicipalityCode == code)
+
+    g <- ggplot(d, aes(x = date.registration.day)) +
+      geom_col(aes(y = n), fill = "grey80") +
+      geom_line_interactive(
+        aes(y = ma,
+            tooltip = paste0(format(date.registration.day, "%Y-%m-%d"),
+                             "  |  daily n = ", n,
+                             "  |  MA = ", round(ma, 1)),
+            data_id = as.character(date.registration.day)),
+        colour = "steelblue", linewidth = 0.8
+      )
+    if (nrow(ep) > 0) {
+      g <- g +
+        geom_vline(data = ep, aes(xintercept = as.numeric(start)),
+                   colour = "darkgreen", linetype = "dashed") +
+        geom_vline(data = ep, aes(xintercept = as.numeric(end)),
+                   colour = "darkred", linetype = "dashed")
+    }
+    g <- g +
+      labs(x = NULL, y = "Daily registrations",
+           title    = paste0(unique(d$Municipality), " — ", code),
+           subtitle = paste0(input$ma_window, "-day moving average  ·  ",
+                             "green = program start, red = program end")) +
+      theme_minimal()
+
+    girafe(ggobj = g, width_svg = 8, height_svg = 4,
+           options = list(opts_hover(css = "stroke:orange;stroke-width:1.5;")))
+  })
+}
+
+shinyApp(ui, server)
+```
