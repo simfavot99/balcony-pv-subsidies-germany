@@ -519,6 +519,10 @@ pal <- colorNumeric(
   reverse  = TRUE   # earlier starts -> lighter, later starts -> darker
 )
 
+# global date range across data_day — used to bound the time-range slider
+date_min <- min(data_day$date.registration.day, na.rm = TRUE)
+date_max <- max(data_day$date.registration.day, na.rm = TRUE)
+
 # --- 3. UI -------------------------------------------------------------------
 ui <- fluidPage(
   titlePanel("Balcony-PV subsidy programs — daily registrations by municipality"),
@@ -528,6 +532,12 @@ ui <- fluidPage(
       uiOutput("muni_info"),
       sliderInput("ma_window", "Moving-average window (days):",
                   min = 7, max = 90, value = 30, step = 1),
+      sliderInput("date_range", "Time range:",
+                  min   = date_min,
+                  max   = date_max,
+                  value = c(date_min, date_max),
+                  timeFormat = "%Y-%m-%d",
+                  width = "100%"),
       girafeOutput("plot", height = "480px")
     )
   )
@@ -561,8 +571,8 @@ server <- function(input, output, session) {
         pal       = pal,
         values    = as.numeric(muni_sf$first_start),
         title     = "Treatment start",
-        labFormat = labelFormat(transform = function(x)
-          format(as.Date(x, origin = "1970-01-01"), "%Y-%m")),
+        labFormat = function(type, cuts, p)
+          format(as.Date(cuts, origin = "1970-01-01"), "%Y-%m"),
         na.label  = "Never treated"
       )
   })
@@ -603,22 +613,26 @@ server <- function(input, output, session) {
 
     g <- ggplot(d, aes(x = date.registration.day)) +
       geom_col(aes(y = n), fill = "grey80") +
-      geom_line_interactive(
+      # continuous MA line (non-interactive, so it renders as one path)
+      geom_line(aes(y = ma), colour = "steelblue", linewidth = 0.8) +
+      # invisible interactive points on top for per-day tooltips
+      geom_point_interactive(
         aes(y = ma,
             tooltip = paste0(format(date.registration.day, "%Y-%m-%d"),
                              "  |  daily n = ", n,
                              "  |  MA = ", round(ma, 1)),
             data_id = as.character(date.registration.day)),
-        colour = "steelblue", linewidth = 0.8
+        colour = "steelblue", size = 1.2, alpha = 0
       )
     if (nrow(ep) > 0) {
       g <- g +
-        geom_vline(data = ep, aes(xintercept = as.numeric(start)),
+        geom_vline(data = ep, aes(xintercept = start),
                    colour = "darkgreen", linetype = "dashed") +
-        geom_vline(data = ep, aes(xintercept = as.numeric(end)),
+        geom_vline(data = ep, aes(xintercept = end),
                    colour = "darkred", linetype = "dashed")
     }
     g <- g +
+      coord_cartesian(xlim = input$date_range) +
       labs(x = NULL, y = "Daily registrations",
            title    = paste0(unique(d$Municipality), " — ", code),
            subtitle = paste0(input$ma_window, "-day moving average  ·  ",
