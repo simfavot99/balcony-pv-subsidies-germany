@@ -20,15 +20,17 @@ pacman::p_load(
   DIDmultiplegtDYN        # de Chaisemartin & D'Haultfœuille dynamic
 )
 
+pacman::p_load(
+  tidyverse, arrow, here, knitr,
+  DIDmultiplegtSTAT
+)
+
 ```
 
 Libraries (necessary):
 
 ```{r}
-library(haven)
-library(dplyr)
-library(DIDmultiplegtDYN)
-library(polars)
+pacman::p_load(haven, dplyr, DIDmultiplegtDYN, polars)
 
 ```
 
@@ -243,14 +245,16 @@ iplot(es,
 
 ```{r}
 stat <- did_multiplegt_stat(
-  df        = as.data.frame(data),
-  outcome   = "log_curr_trans_ind_gov_pc",
-  group     = "county_fips",
-  time      = "year",
-  treatment = "hurricane",
-  cluster   = "county_fips",
-  bootstrap = TRUE,
-  brep      = 100
+  df        = data,
+  Y   = "log_curr_trans_ind_gov_pc",
+  ID     = "county_fips",
+  Time      = "year",
+  D = "hurricane",
+  exact_match = TRUE,
+  estimator = c("aoss", "waoss"),
+  switchers = NULL,
+  disaggregate = NULL,
+  placebo      = TRUE
 )
 
 stat
@@ -290,8 +294,8 @@ test1 <- did_multiplegt_dyn(
   group     = "county_fips",
   time      = "year",
   treatment = "hurricane",
-  effects   = 11,
-  placebo   = 11,
+  effects   = 5,
+  placebo   = 5,
   cluster   = "county_fips",
   effects_equal = TRUE,
   same_switchers = TRUE
