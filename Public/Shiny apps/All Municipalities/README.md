@@ -8,7 +8,7 @@ Built as a companion to the writing-sample paper on the causal effect of municip
 
 ## What the app looks like
 
-![Full app](images/paste-1.png)
+<p align="center"><img src="images/paste-1.png" alt="Full app" width="65%"></p>
 
 Two panels side by side:
 
@@ -21,7 +21,7 @@ Before you click anywhere, the right panel defaults to **Heidelberg (AGS `082210
 
 ## The map (left panel)
 
-![Map](images/paste-2.png)
+<p align="center"><img src="images/paste-2.png" alt="Map" width="55%"></p>
 
 **Colours and borders:**
 
@@ -42,7 +42,7 @@ Only one label is shown at a time — labels disappear as you move on, so the ma
 
 ## The time-series plot (right panel)
 
-![Plot](images/paste-3.png)
+<p align="center"><img src="images/paste-3.png" alt="Plot" width="55%"></p>
 
 For the selected municipality, the plot shows:
 
