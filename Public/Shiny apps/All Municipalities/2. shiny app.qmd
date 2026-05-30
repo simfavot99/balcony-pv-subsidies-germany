@@ -1,0 +1,349 @@
+---
+title: 'Shiny app number 3'
+format: html
+---
+
+
+
+> Here I want to build a new shiny app.
+
+
+
+::: {.callout}
+**Shiny app I want to build**:
+- purpose: I want to have a shiny app where I select the municipality in the map and it shows the plot of the municipality where I can see the daily registrations (with a moving average). 
+
+- I want on the left the leftlet function map of all municipalities (with federal state bounderies), where in the label you show the municipality name and the code. The outcome variable for the map is the cumulative level of the registrations (so that in the map you see the municipalities with a darker color the ones with higher number of cumulative registrations). The outcome variable must be population data adjusted.
+
+- Once you click on one municipality, on the right of the shiny app it shows the moving average (choose you the window of the MA) + in the backgroud the daily registrations (population adjusted).
+There must be also a slider to decide the time-period range of the data.
+The default municipality to choose -even before seelcting one - is Heidelberg municipality.
+In the plot, for the municipalities in the file *3. subsidy programs\3.4. shiny app\2. shiny apps\3\data.treatment.parquet* i want to dispaly vertical lines for starting date or end date of the treatment. Also, for these municipalities, i would like to be able to recognize them from the map (e.g., use a different color for the bounderies of them, in order to recognize them). For those munciiaplities in the 'control' group, that is the never-treated municipalities, just write that they did not implement the program.
+
+
+**Datasets**:
+    1. dataset for municipalities bounderies: *3. subsidy programs\3.4. shiny app\2. shiny apps\3\municipalities.parquet*
+    2. dataset for federal state bounderies: *3. subsidy programs\3.4. shiny app\2. shiny apps\3\federalState.parquet*
+    3. dataset of the outcome variable: *3. subsidy programs\3.4. shiny app\2. shiny apps\3\data.treatment.parquet*
+    4. dataset of the treatment (i.e., the subsidy program): *3. subsidy programs\3.4. shiny app\2. shiny apps\3\data.treatment.parquet*
+
+**File where I have created the dataset**: 
+- *3. subsidy programs\3.4. shiny app\2. shiny apps\3\1. dataset.qmd.qmd*
+
+**Where to put the analysis**: 
+- *3. subsidy programs\3.4. shiny app\2. shiny apps\3\2. shiny app.qmd*
+
+:::
+
+
+
+Shiny app:
+
+
+# 2. shiny app
+> Here I want you to create the shiny app I mentioned at the beginning. Please do everything in one chunk, where you have both the usre interface and the server in the same chunk (so that once I run, it elaborate everything).
+
+Shiny app:
+```{r}
+# --- 0. libraries + data ------------------------------------------------------
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  here, arrow, sfarrow, sf, dplyr,
+  ggplot2, shiny, leaflet, ggiraph, slider, htmltools, purrr, bslib
+)
+
+municipalities <- sfarrow::st_read_parquet(
+  here("3. subsidy programs", "3.4. shiny app", "2. shiny apps", "3", "municipalities.parquet")
+)
+federal_states <- sfarrow::st_read_parquet(
+  here("3. subsidy programs", "3.4. shiny app", "2. shiny apps", "3", "federalState.parquet")
+)
+data_day <- arrow::read_parquet(
+  here("3. subsidy programs/3.4. shiny app/2. shiny apps/3/outcome_variable.parquet")
+)
+data.treatment <- arrow::read_parquet(
+  here("3. subsidy programs/3.4. shiny app/2. shiny apps/3/data.treatment.parquet")
+)
+
+# --- 1. treatment helpers -----------------------------------------------------
+treated_codes <- data.treatment |>
+  filter(treatment == 1L) |>
+  pull(MunicipalityCode) |>
+  unique()
+
+treatment_episodes <- data.treatment |>
+  arrange(MunicipalityCode, date) |>
+  group_by(MunicipalityCode) |>
+  mutate(
+    new_episode = treatment == 1L & lag(treatment, default = 0L) == 0L,
+    episode_id  = cumsum(new_episode)
+  ) |>
+  filter(treatment == 1L) |>
+  group_by(MunicipalityCode, Municipality, episode_id) |>
+  summarise(start = min(date), end = max(date), .groups = "drop") |>
+  arrange(MunicipalityCode, start) |>
+  select(MunicipalityCode, Municipality, start, end)
+
+# --- 2. final cumulative per 100k per muni (drives the map colour) ------------
+muni_cum <- data_day |>
+  group_by(MunicipalityCode) |>
+  summarise(
+    cum_per100k = suppressWarnings(max(n_cumulative_per100k, na.rm = TRUE)),
+    .groups = "drop"
+  ) |>
+  mutate(cum_per100k = if_else(is.infinite(cum_per100k), NA_real_, cum_per100k))
+
+muni_sf <- municipalities |>
+  filter(MunicipalityCode %in% unique(data_day$MunicipalityCode)) |>
+  left_join(muni_cum, by = "MunicipalityCode") |>
+  mutate(is_treated = MunicipalityCode %in% treated_codes)
+
+pal <- colorNumeric(
+  palette  = c("#2d4a7e", "#4e74a3", "#92acc7", "#d4cbb5",
+               "#e2c79a", "#e3a978", "#d7864c", "#b65523"),
+  domain   = muni_sf$cum_per100k,
+  na.color = "#bbbbbb"
+)
+
+# slider bounds
+date_min <- min(data_day$date.registration.day, na.rm = TRUE)
+date_max <- max(data_day$date.registration.day, na.rm = TRUE)
+
+# Shared y-axis cap for the "same scale" option. Calibrated on the treated
+# municipalities only (those in data.treatment), so the scale fits the units
+# of interest for the analysis and isn't distorted by unrelated small
+# municipalities with one-off spikes.
+global_y_max <- data_day |>
+  dplyr::filter(MunicipalityCode %in% treated_codes) |>
+  dplyr::group_by(MunicipalityCode) |>
+  dplyr::summarise(m = suppressWarnings(max(n_per100k, na.rm = TRUE)),
+                   .groups = "drop") |>
+  dplyr::filter(is.finite(m)) |>
+  dplyr::pull(m) |>
+  max(na.rm = TRUE) |>
+  suppressWarnings()
+if (!is.finite(global_y_max) || global_y_max <= 0) global_y_max <- 1
+
+# default municipality = Heidelberg (AGS 08221000)
+default_code <- "08221000"
+
+# --- 3. UI --------------------------------------------------------------------
+ui <- page_fluid(
+  theme = bs_theme(
+    version    = 5,
+    bootswatch = "flatly",
+    primary    = "#2d4a7e"
+  ),
+  tags$head(tags$style(HTML("
+    body { background: #f5f6f8; }
+    .card { border: none; border-radius: 0.6rem; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+    .card-header { background: #ffffff; border-bottom: 1px solid #e9ecef;
+                   font-weight: 600; padding: 0.8rem 1.1rem; }
+    .leaflet-container { border-radius: 0 0 0.6rem 0.6rem; }
+    .irs--shiny .irs-bar { background: #2d4a7e; border-color: #2d4a7e; }
+    .irs--shiny .irs-handle { border-color: #2d4a7e; }
+    .irs--shiny .irs-from, .irs--shiny .irs-to, .irs--shiny .irs-single {
+      background: #2d4a7e;
+    }
+  "))),
+
+  # title bar
+  div(
+    style = paste0(
+      "background: linear-gradient(90deg, #2d4a7e 0%, #4e74a3 100%); ",
+      "color: white; padding: 22px 28px; border-radius: 0.6rem; ",
+      "margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);"
+    ),
+    h2("Balcony-PV adoption across German municipalities",
+       style = "margin: 0; font-weight: 700; font-size: 1.6rem;"),
+    p(paste0("Daily registrations from the Marktstammdatenregister, ",
+             "normalised per 100,000 inhabitants. ",
+             "Click a municipality on the map to inspect its time series."),
+      style = "margin: 6px 0 0 0; opacity: 0.9; font-size: 0.95rem;")
+  ),
+
+  layout_columns(
+    col_widths = c(6, 6),
+
+    card(
+      card_header("Map of municipalities"),
+      full_screen = TRUE,
+      leafletOutput("map", height = 720)
+    ),
+
+    card(
+      card_header("Selected municipality"),
+      full_screen = TRUE,
+      uiOutput("muni_info"),
+      layout_columns(
+        col_widths = c(6, 6),
+        sliderInput("ma_window", "Moving-average window (days):",
+                    min = 7, max = 90, value = 30, step = 1),
+        sliderInput("date_range", "Time range:",
+                    min   = date_min,
+                    max   = date_max,
+                    value = c(date_min, date_max),
+                    timeFormat = "%Y-%m-%d",
+                    width = "100%")
+      ),
+      radioButtons(
+        "y_scale", "Y-axis scale:",
+        choices  = c("Per municipality (free)"     = "free",
+                     "Same for all municipalities" = "fixed"),
+        selected = "free",
+        inline   = TRUE
+      ),
+      girafeOutput("plot", height = "480px")
+    )
+  )
+)
+
+# --- 4. server ----------------------------------------------------------------
+server <- function(input, output, session) {
+
+  # selected municipality — Heidelberg until the user clicks something else
+  selected_code <- reactiveVal(default_code)
+  observeEvent(input$map_shape_click, {
+    selected_code(input$map_shape_click$id)
+  })
+
+  output$map <- renderLeaflet({
+    leaflet() |>
+      addProviderTiles(providers$CartoDB.Positron) |>
+      # municipalities: fill encodes cumulative per 100k; border encodes treated
+      addPolygons(
+        data        = muni_sf,
+        layerId     = ~MunicipalityCode,
+        fillColor   = ~pal(cum_per100k),
+        fillOpacity = 0.85,
+        color       = ~ifelse(is_treated, "#d7191c", "white"),
+        weight      = ~ifelse(is_treated, 2, 0.4),
+        label       = ~paste0(Municipality, " (", MunicipalityCode, ")"),
+        labelOptions = labelOptions(sticky = TRUE, direction = "auto",
+                                    textsize = "12px", opacity = 0.9),
+        highlightOptions = highlightOptions(weight = 3, color = "#1f78b4",
+                                            bringToFront = TRUE)
+      ) |>
+      # federal-state borders on top — non-interactive so they don't intercept
+      # hover/click events meant for the municipalities below
+      addPolygons(
+        data    = federal_states,
+        fill    = FALSE,
+        color   = "black",
+        weight  = 2,
+        opacity = 0.8,
+        options = pathOptions(interactive = FALSE)
+      ) |>
+      addLegend(
+        position = "bottomright",
+        pal      = pal,
+        values   = muni_sf$cum_per100k,
+        title    = "Cumulative<br>per 100k pop.",
+        opacity  = 0.85,
+        na.label = "No data"
+      ) |>
+      htmlwidgets::onRender("
+        function(el, x) {
+          var map = this;
+          // Whenever a tooltip opens, close every OTHER open tooltip on the map.
+          // The source layer is found via e.tooltip._source (Leaflet's internal
+          // back-reference). If we can't identify it, do nothing — better to
+          // show duplicates than to hide every tooltip.
+          map.on('tooltipopen', function(e) {
+            var source = e.tooltip && e.tooltip._source;
+            if (!source) return;
+            map.eachLayer(function(layer) {
+              if (layer !== source && typeof layer.closeTooltip === 'function') {
+                layer.closeTooltip();
+              }
+            });
+          });
+          // Close any open tooltip when the cursor leaves the map container.
+          map.getContainer().addEventListener('mouseleave', function() {
+            map.eachLayer(function(layer) {
+              if (typeof layer.closeTooltip === 'function') layer.closeTooltip();
+            });
+          });
+        }
+      ")
+  })
+
+  output$muni_info <- renderUI({
+    code <- selected_code()
+    info <- muni_sf |> sf::st_drop_geometry() |> filter(MunicipalityCode == code)
+    if (nrow(info) == 0)
+      return(tags$p(em(paste0("Municipality ", code, " not found in data."))))
+    ep <- treatment_episodes |> filter(MunicipalityCode == code)
+    tagList(
+      tags$h4(info$Municipality[1]),
+      tags$p(tags$strong("Code: "), code),
+      tags$strong("Program episodes:"),
+      if (nrow(ep) == 0) {
+        tags$p(em("This municipality did not implement the program (never treated)."))
+      } else {
+        tags$ul(
+          purrr::pmap(list(ep$start, ep$end), function(s, e)
+            tags$li(format(s, "%Y-%m-%d"), " - ", format(e, "%Y-%m-%d"))
+          )
+        )
+      }
+    )
+  })
+
+  output$plot <- renderGirafe({
+    code <- selected_code()
+    d <- data_day |>
+      filter(MunicipalityCode == code) |>
+      arrange(date.registration.day)
+    if (nrow(d) == 0) return(NULL)
+    d <- d |> mutate(
+      ma = slider::slide_dbl(n_per100k, mean,
+                             .before = input$ma_window - 1L,
+                             .complete = FALSE)
+    )
+    ep      <- treatment_episodes |> filter(MunicipalityCode == code)
+    is_ctrl <- !(code %in% treated_codes)
+
+    g <- ggplot(d, aes(x = date.registration.day)) +
+      geom_col(aes(y = n_per100k), fill = "grey80") +
+      geom_line(aes(y = ma), colour = "steelblue", linewidth = 0.8) +
+      geom_point_interactive(
+        aes(y = ma,
+            tooltip = paste0(format(date.registration.day, "%Y-%m-%d"),
+                             "  |  daily/100k = ", round(n_per100k, 3),
+                             "  |  MA = ", round(ma, 3)),
+            data_id = as.character(date.registration.day)),
+        colour = "steelblue", size = 1.2, alpha = 0
+      )
+
+    if (!is_ctrl && nrow(ep) > 0) {
+      g <- g +
+        geom_vline(data = ep, aes(xintercept = start),
+                   colour = "darkgreen", linetype = "dashed") +
+        geom_vline(data = ep, aes(xintercept = end),
+                   colour = "darkred",  linetype = "dashed")
+    }
+
+    subtitle <- if (is_ctrl) {
+      "Never treated — did not implement a subsidy program."
+    } else {
+      paste0(input$ma_window, "-day moving average  ·  ",
+             "green = program start, red = program end")
+    }
+
+    y_lim <- if (isTRUE(input$y_scale == "fixed")) c(0, global_y_max) else NULL
+
+    g <- g +
+      coord_cartesian(xlim = input$date_range, ylim = y_lim) +
+      labs(x = NULL, y = "Daily registrations per 100k pop.",
+           title    = paste0(unique(d$Municipality), " — ", code),
+           subtitle = subtitle) +
+      theme_minimal()
+
+    girafe(ggobj = g, width_svg = 8, height_svg = 4,
+           options = list(opts_hover(css = "stroke:orange;stroke-width:1.5;")))
+  })
+}
+
+shinyApp(ui, server)
+```
