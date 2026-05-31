@@ -3,13 +3,6 @@ title: 'Shiny app at daily frequency'
 format: html
 ---
 
-> Here I want to create the dataset for Germany.
-
-
-**Claude chat**:
-- SHINY APP (3)
-
-
 
 
 
