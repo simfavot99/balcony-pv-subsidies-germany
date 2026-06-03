@@ -1,0 +1,543 @@
+---
+title: "Dataset (clean, transferable)"
+format: html
+---
+
+
+# How to use this file
+
+This file generates panel datasets (monthly / quarterly / yearly) for a
+difference-in-differences analysis on municipality-level data.
+
+**Single source of truth:** all municipality info — name, AGS code,
+treatment start date, treatment end date — lives in **one tibble**
+(`muni_treatment` below). Everything downstream is derived from it.
+
+**To add or remove a municipality:** edit `muni_treatment` only. Re-run.
+- Always-treated tail: leave `treatment_end = NA`.
+- Never-treated control: set `treatment_start = NA, treatment_end = NA`.
+
+**To change the save location:** edit `output_path` at the top.
+
+**To change the panel date range:** edit `date_from` / `date_to`.
+
+**To change the source files:** edit `mastr_path` and `districts_path`.
+
+Outputs (three parquets) — same column schema across frequencies:
+- `Municipality`, `MunicipalityCode`, `date`, `year`
+- Outcome: `n_installations`, `population`, `n_installations_per_1000`,
+           `n_installations_cumulative`, `n_installations_cumulative_per_1000`
+- Treatment: `treatment`, `ever_treated`
+- Covariate: `income_per_capita_eur` (time-invariant; build year × cov
+             interactions at regression time via `fixest::i(year, income_per_capita_eur, ref = …)`).
+
+
+# 1. Setup
+
+Libraries:
+
+```{r}
+pacman::p_load(tidyverse, arrow, sfarrow, sf, here, knitr, restatis)
+```
+
+Credentials (uncomment the first run to register the regio API key):
+
+```{r}
+# gen_auth_save(database = "regio")
+gen_logincheck(database = "regio")
+```
+
+
+
+# 2. Municipality list (single source of truth)
+
+Each row = one municipality in the sample. Treatment dates use **monthly
+granularity** (first day of the month). For always-treated tails or never-
+treated controls, leave `treatment_end` (or both) as `NA`.
+
+
+
+# 3. dataset 
+
+## 3.1. dataset monhtly
+```{r}
+muni_treatment <- tribble(
+  ~Municipality,                    ~MunicipalityCode, ~treatment_start, ~treatment_end,
+  # From Survey
+  "Bonn, Stadt",                    "05314000",        "2021-09-01",     NA,
+  "Darmstadt, Wissenschaftsstadt",  "06411000",        "2021-07-01",     NA,
+  "Frankfurt am Main, Stadt",       "06412000",        "2023-11-01",     "2024-03-01",
+  "Oldenburg (Oldenburg), Stadt",   "03403000",        "2020-01-01",     "2023-03-01",
+  "Jever, Stadt",                   "03455007",        "2023-01-01",     "2023-12-01",
+  "Fröndenberg/Ruhr, Stadt",        "05978012",        "2022-03-01",     "2023-12-01",
+  "Weilheim i.OB, St",              "09190157",        "2022-04-01",     "2024-12-01",
+  "Kamp-Lintfort, Stadt",           "05170020",        "2021-11-01",     "2024-03-01",
+  "Lüneburg, Hansestadt",           "03355022",        NA,               NA,
+  "Friedrichshafen, Stadt",         "08435016",        NA,               NA,
+  "Kornwestheim, Stadt",            "08118046",        NA,               NA,
+  "Erlangen",                       "09562000",        NA,               NA,
+  "Wickede (Ruhr)",                 "05974056",        NA,               NA,
+  # From Heidelberg
+  "Heidelberg, Stadt",              "08221000",        "2022-09-01",     "2024-03-01",
+  # From Ben (not in Survey)
+  "Stuttgart",                      "08111000",        "2020-11-01",     "2025-12-01",
+  "Koln",                           "05315000",        "2022-04-01",     NA,
+  "Braunschweig",                   "03101000",        "2022-04-01",     NA,
+  "Munchen",                        "09162000",        "2022-10-01",     NA,
+  "Berlin",                         "11000000",        "2023-02-01",     NA,
+  "Essen",                          "05113000",        "2023-03-01",     NA,
+  "Dresden",                        "14612000",        "2023-06-01",     NA,
+  "Duisburg",                       "05112000",        "2023-10-01",     NA,
+  "Dortmund",                       "05913000",        "2023-11-01",     NA,
+  "Bremen",                         "04011000",        NA,               NA,
+  "Bremerhaven",                    "04012000",        NA,               NA,
+  "Hamburg",                        "02000000",        NA,               NA,
+  "Reutlingen",                     "08415061",        NA,               NA,
+  "Erfurt",                         "16051000",        NA,               NA,
+  "Hannover",                       "03241001",        NA,               NA,
+  "Munster",                        "05515000",        NA,               NA
+) |>
+  mutate(
+    treatment_start = as.Date(treatment_start),
+    treatment_end   = as.Date(treatment_end)
+  )
+
+muni_treatment
+```
+
+
+Unique chucnk:
+
+```{r}
+# ============================================================================
+# (1) TREATMENT PANEL — monthly balanced panel of (muni, date) with treatment
+# ============================================================================
+
+# Full monthly date range for the panel
+all_dates <- seq.Date(as.Date("2019-02-01"), as.Date("2026-05-07"), by = "month")
+
+# Municipality list (Survey names take priority over Ben names for overlapping codes)
+muni_all <- tribble(
+  ~Municipality,                    ~MunicipalityCode,
+  # From Survey
+  "Bonn, Stadt",                    "05314000",
+  "Darmstadt, Wissenschaftsstadt",  "06411000",
+  "Frankfurt am Main, Stadt",       "06412000",
+  "Oldenburg (Oldenburg), Stadt",   "03403000",
+  "Jever, Stadt",                   "03455007",
+  "Fröndenberg/Ruhr, Stadt",        "05978012",
+  "Weilheim i.OB, St",             "09190157",
+  "Kamp-Lintfort, Stadt",          "05170020",
+  "Lüneburg, Hansestadt",           "03355022",
+  "Friedrichshafen, Stadt",         "08435016",
+  "Kornwestheim, Stadt",            "08118046",
+  "Erlangen",                       "09562000",
+  "Wickede (Ruhr)",                 "05974056",
+  # From Heidelberg
+  "Heidelberg, Stadt",              "08221000",
+  # From Ben (not in Survey)
+  "Stuttgart",                      "08111000",
+  "Koln",                           "05315000",
+  "Braunschweig",                   "03101000",
+  "Munchen",                        "09162000",
+  "Berlin",                         "11000000",
+  "Essen",                          "05113000",
+  "Dresden",                        "14612000",
+  "Duisburg",                       "05112000",
+  "Dortmund",                       "05913000",
+  "Bremen",                         "04011000",
+  "Bremerhaven",                    "04012000",
+  "Hamburg",                         "02000000",
+  "Reutlingen",                     "08415061",
+  "Erfurt",                         "16051000",
+  "Hannover",                       "03241001",
+  "Munster",                        "05515000"
+)
+
+# Create full balanced panel
+data.treatment <- crossing(
+  MunicipalityCode = muni_all$MunicipalityCode,
+  date = all_dates
+) |>
+  left_join(muni_all, by = "MunicipalityCode") |>
+  mutate(
+    treatment = case_when(
+      # --- Survey municipalities (priority 1) ---
+      MunicipalityCode == "05314000" & date >= as.Date("2021-09-01") ~ 1L,
+      MunicipalityCode == "06411000" & date >= as.Date("2021-07-01") ~ 1L,
+      MunicipalityCode == "06412000" & date >= as.Date("2023-11-01") & date <= as.Date("2024-03-01") ~ 1L,
+      MunicipalityCode == "03403000" & date >= as.Date("2020-01-01") & date <= as.Date("2023-03-01") ~ 1L,
+      MunicipalityCode == "03455007" & date >= as.Date("2023-01-01") & date <= as.Date("2023-12-01") ~ 1L,
+      MunicipalityCode == "05978012" & date >= as.Date("2022-03-01") & date <= as.Date("2023-12-01") ~ 1L,
+      MunicipalityCode == "09190157" & date >= as.Date("2022-04-01") & date <= as.Date("2024-12-01") ~ 1L,
+      MunicipalityCode == "05170020" & date >= as.Date("2021-11-01") & date <= as.Date("2024-03-01") ~ 1L,
+      # --- Heidelberg (priority 2) ---
+      MunicipalityCode == "08221000" & date >= as.Date("2022-09-01") & date <= as.Date("2024-03-01") ~ 1L,
+      # --- Ben-only municipalities (priority 3) ---
+      MunicipalityCode == "08111000" & date >= as.Date("2020-11-01") & date <= as.Date("2025-12-01") ~ 1L,
+      MunicipalityCode == "05315000" & date >= as.Date("2022-04-01") ~ 1L,
+      MunicipalityCode == "03101000" & date >= as.Date("2022-04-01") ~ 1L,
+      MunicipalityCode == "09162000" & date >= as.Date("2022-10-01") ~ 1L,
+      MunicipalityCode == "11000000" & date >= as.Date("2023-02-01") ~ 1L,
+      MunicipalityCode == "05113000" & date >= as.Date("2023-03-01") ~ 1L,
+      MunicipalityCode == "14612000" & date >= as.Date("2023-06-01") ~ 1L,
+      MunicipalityCode == "05112000" & date >= as.Date("2023-10-01") ~ 1L,
+      MunicipalityCode == "05913000" & date >= as.Date("2023-11-01") ~ 1L,
+      TRUE ~ 0L
+    )
+  ) |>
+  select(Municipality, MunicipalityCode, date, treatment) |>
+  arrange(Municipality, MunicipalityCode, date) |>
+  group_by(MunicipalityCode) |>
+  mutate(ever_treated = max(treatment)) |>
+  ungroup()
+
+
+# ============================================================================
+# (2) LOAD AND CLEAN THE RAW MaStR DUMP
+# ============================================================================
+
+# Open the raw Marktstammdatenregister parquet (lazy Arrow dataset)
+data <- open_dataset(here("9. dataset", "EinheitenSolar_all.parquet"))
+
+
+# Step 2.1: rename German → English
+# (explicit mapping; column order differs from older versions of the dump)
+data <- data |>
+  rename(
+    UnitMastrNumber                          = EinheitMastrNummer,
+    DateLastUpdate                           = DatumLetzteAktualisierung,
+    LocationMastrNumber                      = LokationMaStRNummer,
+    GridOperatorVerificationStatus           = NetzbetreiberpruefungStatus,
+    GridOperatorVerificationDate             = NetzbetreiberpruefungDatum,
+    PlantOperatorMastrNumber                 = AnlagenbetreiberMastrNummer,
+    Country                                  = Land,
+    FederalState                             = Bundesland,
+    District                                 = Landkreis,
+    Municipality                             = Gemeinde,
+    MunicipalityCode                         = Gemeindeschluessel,
+    PostalCode                               = Postleitzahl,
+    City                                     = Ort,
+    RegistrationDate                         = Registrierungsdatum,
+    CommissioningDate                        = Inbetriebnahmedatum,
+    UnitSystemStatus                         = EinheitSystemstatus,
+    UnitOperationalStatus                    = EinheitBetriebsstatus,
+    NotPresentInMigratedUnits                = NichtVorhandenInMigriertenEinheiten,
+    PowerGenerationUnitName                  = NameStromerzeugungseinheit,
+    Weic_NotAvailable                        = Weic_nv,
+    PowerPlantNumber_NotAvailable            = Kraftwerksnummer_nv,
+    EnergySource                             = Energietraeger,
+    GrossCapacity                            = Bruttoleistung,
+    NetNominalCapacity                       = Nettonennleistung,
+    RemoteControllabilityGridOperator        = FernsteuerbarkeitNb,
+    FeedInType                               = Einspeisungsart,
+    AssignedActivePowerInverter              = ZugeordneteWirkleistungWechselrichter,
+    NumberOfModules                          = AnzahlModule,
+    TypeOfSolarSystem                        = ArtDerSolaranlage,
+    PowerLimitation                          = Leistungsbegrenzung,
+    UniformOrientationAndTiltAngle           = EinheitlicheAusrichtungUndNeigungswinkel,
+    MainOrientation                          = Hauptausrichtung,
+    MainOrientationTiltAngle                 = HauptausrichtungNeigungswinkel,
+    UsageArea                                = Nutzungsbereich,
+    EegMastrNumber                           = EegMaStRNummer,
+    StorageAtSameLocation                    = SpeicherAmGleichenOrt,
+    SecondaryOrientation                     = Nebenausrichtung,
+    SecondaryOrientationTiltAngle            = NebenausrichtungNeigungswinkel,
+    Street                                   = Strasse,
+    StreetNotFound                           = StrasseNichtGefunden,
+    HouseNumber_NotAvailable                 = Hausnummer_nv,
+    HouseNumberNotFound                      = HausnummerNichtGefunden,
+    Longitude                                = Laengengrad,
+    Latitude                                 = Breitengrad,
+    DateStartTemporaryDecommissioning        = DatumBeginnVoruebergehendeStilllegung,
+    HouseNumber                              = Hausnummer,
+    AddressAddition                          = Adresszusatz,
+    RemoteControllabilityDirectMarketer      = FernsteuerbarkeitDv,
+    PreviousPlantOperatorMastrNumber         = AltAnlagenbetreiberMastrNummer,  # new variable
+    DateOfOperatorChange                     = DatumDesBetreiberwechsels,
+    DateRegistrationOfOperatorChange         = DatumRegistrierungDesBetreiberwechsels,
+    CadastralDistrict                        = Gemarkung,
+    FieldParcelNumbers                       = FlurFlurstuecknummern,
+    ConnectionToExtraHighOrHighVoltage       = AnschlussAnHoechstOderHochSpannung,
+    DatePermanentDecommissioning             = DatumEndgueltigeStilllegung,
+    SizeOfUsedAreaInHectares                 = GroesseDerInAnspruchGenommenenFlaecheInHektar,
+    PreviousUsageTypeOfArea                  = VorherigerNutzungsartenbereichDerFlaeche,
+    PredominantUsageTypeBeforeSolarConstruction = UeberwiegendeNutzungsartDerFlaecheVorErrichtung,
+    NameOfSolarPark                          = NameDesSolarparks,
+    AdditionalFeaturesOfAreaAndCurrentUsage  = ZusaetzlicheMerkmaleDerFlaecheUndDerAktuellenFlaechennutzung,
+    GenMastrNumber                           = GenMastrNummer,
+    CommissioningDateAtCurrentLocation       = InbetriebnahmedatumAmAktuellenStandort,
+    DispatchResponsible                      = Einsatzverantwortlicher,
+    CitizenEnergy                            = Buergerenergie,
+    DateResumptionOfOperation                = DatumWiederaufnahmeBetrieb,
+    PlannedCommissioningDate                 = GeplantesInbetriebnahmedatum,
+    ClearanceHeight                          = LichteHoehe,
+    PowerPlantNumber                         = Kraftwerksnummer
+  )
+
+# Step 2.2: coerce numeric columns (XML parsing stores everything as character)
+data <- data |>
+  mutate(
+    TypeOfSolarSystem           = as.integer(TypeOfSolarSystem),
+    Country                     = as.integer(Country),
+    FederalState                = as.integer(FederalState),
+    GrossCapacity               = as.numeric(GrossCapacity),
+    NetNominalCapacity          = as.numeric(NetNominalCapacity),
+    AssignedActivePowerInverter = as.numeric(AssignedActivePowerInverter),
+    NumberOfModules             = as.integer(NumberOfModules)
+  )
+
+# Step 2.3: lookup tables (TypeOfSolarSystem, Country, FederalState, District)
+C1 <- data.frame(
+  TypeOfSolarSystem.names = c(
+    "Structural_facilities", "Other_Structural_facilities", "Open_space",
+    "Bodies_water", "Large_parking_lot", "Plug_in_sola_system", "Onshore&Offshore_wind_power"
+  ),
+  TypeOfSolarSystem = as.integer(c(853, 2484, 852, 3002, 3058, 2961, NA))
+)
+
+C2 <- tibble(
+  Country = as.integer(c(84, 231, 90, 66, 198, 206, 106)),
+  Country.sn = c("Germany", "Switzerland", "Denmark", "Belgium", "Netherlands", "Austria", "France")
+)
+
+C3 <- data.frame(
+  FederalState = as.integer(c(
+    1409, 1402, 1400, 1403, 1412, 1408, 1410, 1407,
+    1414, 1411, 1413, 1405, 1415, 1406, 1401, 1404
+  )),
+  FederalState.names = c(
+    "North Rhine-Westphalia", "Baden-Württemberg", "Brandenburg", "Bavaria",
+    "Saarland", "Lower Saxony", "Rhineland-Palatinate", "Mecklenburg-Western Pomerania",
+    "Saxony-Anhalt", "Schleswig-Holstein", "Saxony", "Hesse",
+    "Thuringia", "Hamburg", "Berlin", "Bremen"
+  ),
+  FederalStateCode = c(
+    "DEA", "DE1", "DE4", "DE2",
+    "DEC", "DE9", "DEB", "DEM",
+    "DEE", "DEF", "DED", "DE7",
+    "DEG", "DE6", "DE3", "DE5"
+  )
+)
+
+# District code from map (geometry dropped — only the District ↔ code lookup is needed)
+districts_map <- st_read_parquet(here("9. dataset", "districts.parquet")) |>
+  st_drop_geometry() |>
+  select(District, DistrictCode)
+
+# Step 2.4: attach lookup labels and codes to the dataset
+data <- data |>
+  left_join(C1, by = "TypeOfSolarSystem") |>
+  relocate(TypeOfSolarSystem.names, .after = TypeOfSolarSystem) |>
+  left_join(C2, by = "Country") |>
+  relocate(Country.sn, .after = Country) |>
+  left_join(C3, by = "FederalState") |>
+  relocate(FederalState.names, .after = FederalState) |>
+  relocate(FederalStateCode, .after = FederalState.names) |>
+  left_join(districts_map, by = "District") |>
+  relocate(DistrictCode, .after = District)
+
+# Step 2.5: classify balcony PVs (Solarpaket-I reform on 2024-05-16 changed the threshold)
+reform_date <- as.Date("2024-05-16")
+
+data <- data |>
+  mutate(
+    RegistrationDate  = as.Date(RegistrationDate),
+    CommissioningDate = as.Date(CommissioningDate),
+    solar_category = case_when(
+      TypeOfSolarSystem == 2961 & RegistrationDate <  reform_date & AssignedActivePowerInverter <= 0.6 ~ "Plug_in_sola_system - Balcony",
+      TypeOfSolarSystem == 2961 & RegistrationDate >= reform_date & AssignedActivePowerInverter <= 0.8 & GrossCapacity <= 2.0 ~ "Plug_in_sola_system - Balcony",
+      TypeOfSolarSystem == 2961 ~ "Plug_in_sola_system - Non-Balcony",
+      TRUE ~ TypeOfSolarSystem.names
+    )
+  )
+# Step 2.6: keep Germany only
+data <- data |>
+  filter(Country.sn == "Germany")
+
+# Step 2.7: derive date variables at every frequency we may need downstream
+data <- data |>
+  mutate(
+    date.registration.day     = RegistrationDate,
+    date.registration.week    = floor_date(RegistrationDate,  "week"),
+    date.registration.month   = floor_date(RegistrationDate,  "month"),
+    date.registration.quarter = floor_date(RegistrationDate,  "quarter"),
+    date.registration.year    = floor_date(RegistrationDate,  "year"),
+    date.commission.day       = CommissioningDate,
+    date.commission.week      = floor_date(CommissioningDate, "week"),
+    date.commission.month     = floor_date(CommissioningDate, "month"),
+    date.commission.quarter   = floor_date(CommissioningDate, "quarter"),
+    date.commission.year      = floor_date(CommissioningDate, "year")
+  )
+
+# Step 2.8: pad MunicipalityCode to 8 digits (preserve leading zeros)
+data <- data |>
+  mutate(MunicipalityCode = str_pad(as.character(MunicipalityCode), 8, pad = "0"))
+
+
+# ============================================================================
+# (3) FILTER TO BALCONY PVs IN TREATMENT MUNICIPALITIES, INSIDE THE PANEL RANGE
+# ============================================================================
+
+# Keep balcony PVs only
+data <- data |>
+  filter(solar_category == "Plug_in_sola_system - Balcony")
+
+# Single source of truth: the muni list comes from data.treatment above.
+# Any change to data.treatment automatically propagates downstream.
+muni_all <- data.treatment |>
+  distinct(Municipality, MunicipalityCode)
+
+# Keep only the treatment municipalities
+data <- data |>
+  filter(MunicipalityCode %in% muni_all$MunicipalityCode)
+
+# Restrict to the monthly panel range
+lo <- min(all_dates)
+hi <- max(all_dates)
+data <- data |>
+  filter(date.registration.month >= lo,
+         date.registration.month <= hi)
+
+
+# ============================================================================
+# (4) AGGREGATE TO MONTHLY OUTCOME PANEL (balanced, with cumulative stock)
+# ============================================================================
+
+data.outcome <- data |>
+  count(MunicipalityCode, date = date.registration.month, name = "n_installations") |>
+  collect() |>
+  complete(
+    MunicipalityCode = muni_all$MunicipalityCode,
+    date             = all_dates,
+    fill             = list(n_installations = 0L)
+  ) |>
+  left_join(muni_all, by = "MunicipalityCode") |>
+  arrange(MunicipalityCode, date) |>
+  group_by(MunicipalityCode) |>
+  mutate(n_installations_cumulative = cumsum(n_installations)) |>
+  ungroup() |>
+  select(Municipality, MunicipalityCode, date,
+         n_installations, n_installations_cumulative)
+
+
+# ============================================================================
+# (5) POPULATION DENOMINATOR (2023, from Destatis regio)
+# ============================================================================
+
+pop_2023 <- gen_table(
+  name      = "12411-01-01-5",
+  database  = "regio",
+  language  = "en",
+  startyear = 2023,
+  endyear   = 2023
+) |>
+  filter(`1_variable_code` == "GEMEIN",                # municipalities only
+         is.na(`2_variable_attribute_code`),           # sex Total
+         !is.na(`1_variable_attribute_label`),         # drop unnamed rows
+         !value %in% c("-", ".")) |>                   # drop Destatis sentinels (- / .)
+  transmute(
+    Municipality     = `1_variable_attribute_label`,
+    MunicipalityCode = `1_variable_attribute_code`,
+    population_2023  = as.numeric(value)
+  )
+
+# Population-adjust the outcome (flow and cumulative stock, per 1,000 inhabitants)
+data.outcome <- data.outcome |>
+  left_join(pop_2023 |> select(MunicipalityCode, population_2023),
+            by = "MunicipalityCode") |>
+  rename(population = population_2023) |>
+  mutate(
+    n_installations_per_1000            = n_installations            / population * 1000,
+    n_installations_cumulative_per_1000 = n_installations_cumulative / population * 1000
+  )
+
+
+# ============================================================================
+# (6) COVARIATE: 2018 INCOME PER CAPITA (time-invariant)
+# ============================================================================
+
+# 2018 total income — Gesamtbetrag der Einkünfte (EKF002), in Tsd. EUR → EUR
+income_2018 <- gen_table(
+  name      = "73111-01-01-5",
+  database  = "regio",
+  language  = "en",
+  startyear = 2018,
+  endyear   = 2018
+) |>
+  filter(`1_variable_code` == "GEMEIN",                # municipalities only
+         value_variable_code == "EKF002",              # total income (drops LSNW01/LSNW02)
+         !is.na(`1_variable_attribute_label`),
+         !value %in% c("-", ".")) |>
+  transmute(
+    Municipality     = `1_variable_attribute_label`,
+    MunicipalityCode = `1_variable_attribute_code`,
+    total_income_eur = as.numeric(value) * 1000        # Tsd. EUR -> EUR
+  )
+
+# 2018 population — denominator for per-capita income
+# (fresh 2018 snapshot, not the 2023 figure, so the ratio is internally consistent)
+pop_2018 <- gen_table(
+  name      = "12411-01-01-5",
+  database  = "regio",
+  language  = "en",
+  startyear = 2018,
+  endyear   = 2018
+) |>
+  filter(`1_variable_code` == "GEMEIN",
+         is.na(`2_variable_attribute_code`),
+         !is.na(`1_variable_attribute_label`),
+         !value %in% c("-", ".")) |>
+  transmute(
+    Municipality     = `1_variable_attribute_label`,
+    MunicipalityCode = `1_variable_attribute_code`,
+    population_2018  = as.numeric(value)
+  )
+
+# Income per capita = total income / population (joined on AGS)
+income_pc_2018 <- income_2018 |>
+  inner_join(pop_2018 |> select(MunicipalityCode, population_2018),
+             by = "MunicipalityCode") |>
+  mutate(income_per_capita_eur = total_income_eur / population_2018) |>
+  select(Municipality, MunicipalityCode, income_per_capita_eur)
+
+
+# ============================================================================
+# (7) MERGE — outcome (panel) + treatment (panel) + income covariate (invariant)
+# ============================================================================
+# The covariate is broadcast to every month by joining on MunicipalityCode only.
+# `year` is added so year × covariate interactions can be built at regression
+# time via fixest::i(year, income_per_capita_eur, ref = ...).
+
+data.merged <- data.outcome |>
+  left_join(data.treatment |> select(MunicipalityCode, date, treatment, ever_treated),
+            by = c("MunicipalityCode", "date")) |>
+  left_join(income_pc_2018 |> select(MunicipalityCode, income_per_capita_eur),
+            by = "MunicipalityCode") |>
+  mutate(year = year(date)) |>
+  arrange(MunicipalityCode, date)
+
+data.merged |> print() |> glimpse()
+
+```
+
+
+Save it:
+
+```{r}
+# save to disk
+write_parquet(
+  data.merged,
+  here("9. dataset", "data_monthly.parquet")
+)
+
+# reload (verification) and inspect
+data.monthly <- read_parquet(
+  here("9. dataset", "data_monthly.parquet")
+)
+
+data.monthly |> print() |> glimpse()
+```
+
+
+
